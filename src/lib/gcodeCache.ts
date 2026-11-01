@@ -21,6 +21,7 @@ function fileKey(path: string) {
 function validOffset(value: unknown): value is WorkOffset {
   const offset = value as WorkOffset | null
   return !!offset && [offset.x, offset.y, offset.z].every(Number.isFinite)
+    && (offset.a === undefined || Number.isFinite(offset.a))
 }
 
 function validFile(value: unknown): value is CachedGCode {

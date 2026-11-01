@@ -309,6 +309,9 @@ export function buildJobTimingEstimate(
   settings: ControllerSettings,
   overrides: JobTimingOverrides = {},
 ): JobTimingEstimate | null {
+  // The existing planner estimates XYZ only. Do not publish a misleading ETA
+  // for rotary jobs until angular rate/acceleration planning is supported.
+  if (model.segments.pa) return null
   const feedScale = getOverrideScale(overrides.feedPercent)
   const rapidScale = getOverrideScale(overrides.rapidPercent)
   const key = `${motionSettingsKey(settings)}|${feedScale}|${rapidScale}`

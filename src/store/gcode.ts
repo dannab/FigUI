@@ -168,7 +168,7 @@ function parseWorkOffsetResponse(
 ): Partial<Record<WorkCoordinateSystem, WorkOffset>> {
   const offsets: Partial<Record<WorkCoordinateSystem, WorkOffset>> = {}
   const numberPattern = '(-?(?:\\d+\\.?\\d*|\\.\\d+))'
-  const offsetPattern = new RegExp(`^\\[(G5[4-9](?:\\.[1-3])?):${numberPattern},${numberPattern},${numberPattern}(?:,[^\\]]*)?\\]$`)
+  const offsetPattern = new RegExp(`^\\[(G5[4-9](?:\\.[1-3])?):${numberPattern},${numberPattern},${numberPattern}(?:,${numberPattern})?(?:,[^\\]]*)?\\]$`)
   for (const raw of text.split('\n')) {
     const match = raw.trim().match(offsetPattern)
     const wcs = normalizeWcs(match?.[1])
@@ -177,6 +177,7 @@ function parseWorkOffsetResponse(
       x: Number.parseFloat(match[2]) * linearScale,
       y: Number.parseFloat(match[3]) * linearScale,
       z: Number.parseFloat(match[4]) * linearScale,
+      ...(match[5] != null ? { a: Number.parseFloat(match[5]) } : {}),
     }
   }
   return offsets

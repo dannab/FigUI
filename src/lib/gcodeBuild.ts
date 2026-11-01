@@ -126,7 +126,7 @@ export interface RenderLines {
   hasTools: boolean
 }
 
-class RenderLineWriter {
+export class RenderLineWriter {
   count = 0
   positions: Float32Array
   kinds: Uint8Array

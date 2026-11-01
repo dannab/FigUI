@@ -3,6 +3,10 @@
 export type MoveType = 'rapid' | 'feed' | 'traverse'
 
 export interface Segment {
+  /** Continuous physical A angle in degrees, in the preview's original work frame. */
+  a0?: number; a1?: number
+  /** Offset to subtract from the physical angle to display programmed A. */
+  aOffset?: number
   x0: number; y0: number; z0: number
   x1: number; y1: number; z1: number
   /** One-based physical row in the source G-code file. */
@@ -34,6 +38,8 @@ export interface GCodeTool {
 }
 
 export interface GCodeModel {
+  /** Work frame captured at parse time; later G10/G92 zero changes do not move it. */
+  referenceWco?: WorkOffset
   segments: SegmentTable
   tools?: GCodeTool[]
   bounds: { minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number }
@@ -52,6 +58,7 @@ export interface WorkOffset {
   x: number
   y: number
   z: number
+  a?: number
 }
 
 export interface ParseGCodeOptions {
@@ -99,6 +106,9 @@ export class SegmentTable {
     readonly arcIndex: Int32Array,
     readonly arcOffsets: Float64Array,
     readonly hasTools: boolean,
+    /** Allocated only for programs containing A motion words. Never reduced modulo 360. */
+    readonly pa: Float64Array | null = null,
+    readonly aOffsets: Float64Array | null = null,
   ) {}
 
   moveCode(index: number) {
@@ -152,6 +162,11 @@ export class SegmentTable {
       x1: this.px[index + 1], y1: this.py[index + 1], z1: this.pz[index + 1],
       moveType: MOVE_TYPES[moveCode],
       sourceLine: this.sourceLines[index],
+    }
+    if (this.pa) {
+      seg.a0 = this.pa[index]
+      seg.a1 = this.pa[index + 1]
+      seg.aOffset = this.aOffsets?.[index] ?? 0
     }
     if (flags & FLAG_ARC) {
       const arc = this.arcIndex[index] * 3
@@ -226,6 +241,7 @@ function getShift(
     x: target.x - currentWco.x,
     y: target.y - currentWco.y,
     z: target.z - currentWco.z,
+    a: (target.a ?? 0) - (currentWco.a ?? 0),
   }
 }
 
@@ -256,7 +272,8 @@ function toolLabel(tool: number, name: string | null) {
 }
 
 // Word letters are indexed A=0 … Z=25.
-const W_F = 5, W_I = 8, W_J = 9, W_K = 10, W_L = 11, W_P = 15, W_R = 17, W_S = 18, W_T = 19, W_X = 23, W_Y = 24, W_Z = 25
+const W_A = 0, W_F = 5, W_I = 8, W_J = 9, W_K = 10, W_L = 11, W_P = 15, W_R = 17, W_S = 18, W_T = 19, W_X = 23, W_Y = 24, W_Z = 25
+const HAS_A = 1 << W_A
 const HAS_F = 1 << W_F
 const HAS_I = 1 << W_I
 const HAS_J = 1 << W_J
@@ -301,7 +318,8 @@ export class GCodeParser {
   private done = false
 
   // Machine state
-  private x = 0; private y = 0; private z = 0
+  private x = 0; private y = 0; private z = 0; private a = 0
+  private offA = 0
   private offX = 0; private offY = 0; private offZ = 0   // G92 coordinate offsets
   private readonly optionActiveWcs: WorkCoordinateSystem | undefined
   private readonly currentWco: WorkOffset
@@ -348,6 +366,8 @@ export class GCodeParser {
   private px = new Float64Array(1)
   private py = new Float64Array(1)
   private pz = new Float64Array(1)
+  private pa: Float64Array | null = null
+  private aOffsets: Float64Array | null = null
   private sourceLines = new Uint32Array(0)
   private flags = new Uint8Array(0)
   private feeds = new Float32Array(0)
@@ -450,6 +470,8 @@ export class GCodeParser {
       cut(this.arcIndex, n),
       this.arcOffsets.slice(0, this.arcCount * 3),
       this.hasTools,
+      this.pa ? cut(this.pa, n + 1) : null,
+      this.aOffsets ? cut(this.aOffsets, n) : null,
     )
 
     const bounds = this.bounds
@@ -461,6 +483,7 @@ export class GCodeParser {
 
     return {
       segments,
+      referenceWco: { ...this.currentWco },
       tools: this.toolMap.size > 0 ? Array.from(this.toolMap.values()).sort((a, b) => a.number - b.number) : undefined,
       bounds,
       totalLines: this.lineIndex,
@@ -581,6 +604,10 @@ export class GCodeParser {
     this.px[index + 1] = x
     this.py[index + 1] = y
     this.pz[index + 1] = z
+    if (this.pa && this.aOffsets) {
+      this.pa[index + 1] = this.a
+      this.aOffsets[index] = this.offA + (this.wcsShift.a ?? 0)
+    }
     this.sourceLines[index] = sourceLine
     this.flags[index] = flags
     this.feeds[index] = feed
@@ -614,6 +641,10 @@ export class GCodeParser {
     const gCodes = this.gCodes
     const mCodes = this.mCodes
     if (mask === 0 && gCodes.length === 0 && mCodes.length === 0) return
+    if ((mask & HAS_A) && !this.pa) {
+      this.pa = new Float64Array(this.capacity + 1)
+      this.aOffsets = new Float64Array(this.capacity)
+    }
 
     // Tool naming needs the comment text; such lines are rare.
     let stripped: ReturnType<typeof stripComments> | null = null
@@ -669,7 +700,7 @@ export class GCodeParser {
       if (g === 4) { hasG4 = true; continue }
       if (g === 28) { hasG28 = true; continue }
       if (g === 92) { hasG92 = true; continue }
-      if (g === 92.1 || g === 92.2) { this.offX = this.offY = this.offZ = 0; continue }
+      if (g === 92.1 || g === 92.2) { this.offX = this.offY = this.offZ = this.offA = 0; continue }
       if (g === 10) { hasG10 = true; continue }
       if (g === 43.1) { hasG43 = true; continue }
       if (g === 53) { hasG53 = true; continue }
@@ -716,6 +747,7 @@ export class GCodeParser {
 
     // G92 – set coordinate offset; axes not on the line keep theirs
     if (hasG92) {
+      if (mask & HAS_A) this.offA = this.a - (shift.a ?? 0) - words[W_A]
       if (probed & HAS_X) this.x = words[W_X] + this.offX + shift.x
       else if (mask & HAS_X) this.offX = this.x - shift.x - words[W_X]
       if (probed & HAS_Y) this.y = words[W_Y] + this.offY + shift.y
@@ -734,6 +766,7 @@ export class GCodeParser {
       const target = p === 0 ? this.wcs : WCS_BY_P[p - 1]
       if (target && (level === 2 || level === 20)) {
         const next = { ...(target === this.wcs ? shift : this.shiftFor(target)) }
+        if (mask & HAS_A) next.a = level === 2 ? words[W_A] - (this.currentWco.a ?? 0) : this.a - this.offA - words[W_A]
         const wco = this.currentWco
         const keep = level === 20 ? probed : 0
         if ((mask & HAS_X) && !(keep & HAS_X)) next.x = level === 2 ? words[W_X] - wco.x : this.x - this.offX - words[W_X]
@@ -761,7 +794,7 @@ export class GCodeParser {
     }
 
     const plane = this.plane
-    const hasMove = (mask & (HAS_X | HAS_Y | HAS_Z)) !== 0
+    const hasMove = (mask & (HAS_X | HAS_Y | HAS_Z | HAS_A)) !== 0
     const hasArcCenter = plane === 17
       ? (mask & (HAS_I | HAS_J | HAS_R)) !== 0
       : plane === 18
@@ -788,6 +821,11 @@ export class GCodeParser {
       x = ((mask & HAS_X) ? words[W_X] : (x0 - shift.x - this.offX)) + this.offX + shift.x
       y = ((mask & HAS_Y) ? words[W_Y] : (y0 - shift.y - this.offY)) + this.offY + shift.y
       z = ((mask & HAS_Z) ? words[W_Z] : (z0 - shift.z - this.offZ)) + this.offZ + shift.z
+    }
+    if (mask & HAS_A) {
+      this.a = hasG53 ? words[W_A] - (this.currentWco.a ?? 0)
+        : this.incremental ? this.a + words[W_A]
+        : words[W_A] + this.offA + (shift.a ?? 0)
     }
     this.x = x; this.y = y; this.z = z
     if (hasG38) this.probedAxes |= mask & (HAS_X | HAS_Y | HAS_Z)

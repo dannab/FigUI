@@ -18,6 +18,8 @@ import { GCODE_ACCEPT_ATTRIBUTE, isGCodeFileName } from '../lib/gcodeFiles'
 import { controllerRunCommand, isConfigMacro, isRunningFile, runningFilePath } from '../lib/controllerFiles'
 import { buildFramingGCode, getFramingRequiredTravelZ, programMovesZ, type FramingMode } from '../lib/gcodeOutline'
 import { parseDecimalInput } from '../lib/numberInput'
+import { RotaryAView } from './RotaryAView'
+import { getBase } from '../lib/http'
 
 const GCODE_EXTENSIONS_PREVIEW = '.g, .nc, .gcode, .ngc, .tap, or .cnc'
 
@@ -1525,6 +1527,9 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
     return () => window.clearTimeout(timeout)
   }, [fitToViewSignal])
 
+  const [rotaryMode, setRotaryMode] = useState(false)
+  const [rotaryFitSignal, setRotaryFitSignal] = useState(0)
+  useEffect(() => { setRotaryMode(!!model?.segments.pa) }, [model])
   const [is3D, setIs3D] = useState(false)
   const [projectionMode, setProjectionMode] = useState<ProjectionMode>('orthographic')
   const [dragMode, setDragMode] = useState<DragMode>('orbit')
@@ -2625,6 +2630,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
   }
 
   function render() {
+    if (rotaryMode && modelRef.current) return
     const { w, h } = canvasLogicalSize()
 
     if (is3D) {
@@ -3082,6 +3088,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
     const container = containerRef.current
     if (!container) return
     function onWheel(e: WheelEvent) {
+      if (rotaryMode) return
       e.preventDefault()
       e.stopPropagation()
 
@@ -3103,7 +3110,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
     }
     container.addEventListener('wheel', onWheel, { passive: false })
     return () => container.removeEventListener('wheel', onWheel)
-  }, [is3D, projectionMode])
+  }, [is3D, projectionMode, rotaryMode])
 
   function onPointerDown(e: React.PointerEvent) {
     if (is3D) e.preventDefault()
@@ -3401,7 +3408,8 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
   const viewCubeData = is3D ? get3DViewCubeData(orbitState, cameraRef.current.up, VCX, VCY, CUBE_S) : null
 
   return (
-    <div className={`panel flex flex-col overflow-hidden ${className ?? ''}`}>
+    <div className={`panel flex flex-col overflow-hidden ${className ?? ''}`}
+      style={rotaryMode && isTablet ? { minHeight: 640 } : undefined}>
       <div className="panel-header !flex-col !items-stretch sm:!flex-row sm:!items-center sm:justify-between gap-y-1.5">
         {!isTablet && (
         <div className="flex items-center gap-2 min-w-0 sm:flex-1">
@@ -3460,6 +3468,14 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
             const iconSize = isTablet ? 16 : 11
             return (<>
           <button
+            className={`${btnCls} ${rotaryMode ? 'text-accent bg-accent/10' : 'text-text-dim bg-elevated'}`}
+            disabled={!model?.segments.pa}
+            aria-pressed={rotaryMode}
+            title="Visualizza il percorso avvolto dell'asse A"
+            onClick={() => { stopSimulation(); setRotaryMode(v => !v) }}
+          >A rotativo</button>
+          {!rotaryMode && <>
+          <button
             className={`${btnCls} ${is3D ? 'text-ok bg-ok/10' : 'text-text-dim bg-elevated hover:text-text-primary'} ${is3DToggleDisabled ? 'opacity-50 cursor-not-allowed hover:text-text-dim hover:bg-elevated' : ''}`}
             onClick={() => {
               if (is3DToggleDisabled) return
@@ -3495,6 +3511,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
               </button>
             </>
           )}
+          </>}
           <button
             className={`${btnCls} ${showRapids ? 'text-accent bg-accent/10' : 'text-text-dim bg-elevated hover:text-text-primary'}`}
             onClick={() => setShowRapids(!showRapids)}
@@ -3503,7 +3520,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
             <Eye size={iconSize} />
             <span>Rapids</span>
           </button>
-          {!is3D && (
+          {!rotaryMode && !is3D && (
             <button
               className={`${btnCls} ${showPlunges ? 'text-accent bg-accent/10' : 'text-text-dim bg-elevated hover:text-text-primary'}`}
               onClick={() => setShowPlunges(!showPlunges)}
@@ -3522,7 +3539,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
             <Crosshair size={iconSize} />
             <span>Tool</span>
           </button>
-          {!is3D && (
+          {!rotaryMode && !is3D && (
             <div className="relative flex items-center">
               <button
                 className={`${btnCls} rounded-r-none ${isTablet ? 'pr-1' : 'pr-0.5'} ${autoFollow ? 'text-info bg-info/10' : 'text-text-dim bg-elevated hover:text-text-primary'}`}
@@ -3568,7 +3585,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
           )}
           <button
             className={`${btnCls} text-text-muted hover:text-text-primary hover:bg-elevated`}
-            onClick={() => fitToView()}
+            onClick={() => rotaryMode ? setRotaryFitSignal(v => v + 1) : fitToView()}
             title="Fit entire path to view"
           >
             <Maximize2 size={iconSize} />
@@ -3590,9 +3607,12 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
         }}
         onContextMenu={e => { if (is3D) e.preventDefault() }}
       >
+        {rotaryMode && model && !loading && (
+          <RotaryAView key={getBase()} model={model} showRapids={showRapids} showTool={showTool} hiddenTools={hiddenTools} fitSignal={rotaryFitSignal} stale={!!otherProgram} />
+        )}
         <canvas
           ref={canvasRef}
-          className={`absolute inset-0 transition-[filter,opacity] duration-150 ${is3D ? 'hidden' : ''} ${loading || isValidFileDragging ? 'blur-[2px] opacity-40' : ''}`}
+          className={`absolute inset-0 transition-[filter,opacity] duration-150 ${is3D || rotaryMode ? 'hidden' : ''} ${loading || isValidFileDragging ? 'blur-[2px] opacity-40' : ''}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -3600,7 +3620,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
         />
         <canvas
           ref={webglCanvasRef}
-          className={`absolute inset-0 transition-[filter,opacity] duration-150 ${!is3D ? 'hidden' : ''} ${loading || isValidFileDragging ? 'blur-[2px] opacity-40' : ''}`}
+          className={`absolute inset-0 transition-[filter,opacity] duration-150 ${!is3D || rotaryMode ? 'hidden' : ''} ${loading || isValidFileDragging ? 'blur-[2px] opacity-40' : ''}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -3742,7 +3762,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
           </div>
         )}
 
-        {showToolPathControls && !loading && (
+        {showToolPathControls && !loading && !rotaryMode && (
           <div className={`absolute ${isProcessing3D ? 'top-20' : 'top-3'} left-3 z-20 ${showToolPathMenu ? 'w-[min(15rem,calc(100%-1.5rem))]' : 'w-auto'} pointer-events-none`}>
             <div className="pointer-events-auto inline-block w-full rounded border border-border bg-surface/80 backdrop-blur-sm p-1 shadow-sm">
               <button
@@ -3795,7 +3815,7 @@ export function GCodeViewer({ className, isTablet, showOverrides, fitToViewSigna
           </div>
         )}
 
-        {model && !isViewerStartBlocked && !machineJobActive && (
+        {model && !model.segments.pa && !isViewerStartBlocked && !machineJobActive && (
           <div className={`absolute ${isProcessing3D ? 'top-20' : 'top-3'} right-3 left-3 sm:left-auto z-20 flex justify-end pointer-events-none`}>
             {!simulationActive ? (
               <div className="pointer-events-auto flex items-center gap-1.5">
